@@ -1,0 +1,10 @@
+flask
+flask-cors
+flask-sqlalchemy
+flask-migrate
+flask-jwt-extended
+psycopg2-binary
+python-dotenv
+marshmallow
+faker
+gunicorn
