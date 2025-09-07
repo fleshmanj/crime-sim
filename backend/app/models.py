@@ -3,6 +3,7 @@ from datetime import datetime
 from werkzeug.security import generate_password_hash, check_password_hash
 
 class User(db.Model):
+    __tablename__ = "users"  # <-- rename
     id = db.Column(db.Integer, primary_key=True)
     email = db.Column(db.String(255), unique=True, nullable=False)
     password_hash = db.Column(db.String(255), nullable=False)
@@ -16,6 +17,7 @@ class User(db.Model):
         return check_password_hash(self.password_hash, raw)
 
 class Incident(db.Model):
+    __tablename__ = "incidents"  # optional, but clearer
     id = db.Column(db.Integer, primary_key=True)
     case_no = db.Column(db.String(32), index=True)
     occurred_at = db.Column(db.DateTime, default=datetime.utcnow, index=True)
