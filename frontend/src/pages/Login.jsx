@@ -27,7 +27,7 @@ export default function Login() {
     try {
       await login(email, password);
       localStorage.setItem("lastEmail", email);
-      nav("/search");
+      nav("/ncic");
     } catch (e) {
       setErr("Invalid credentials. Try the demo accounts below or contact your instructor.");
     } finally {
