@@ -14,34 +14,25 @@ services:
       timeout: 5s
       retries: 10
 
-  migrator:
-    image: postgres:16
-    depends_on:
-      db:
-        condition: service_healthy
-    environment:
-      POSTGRES_DB: ${POSTGRES_DB}
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-    volumes:
-      - ./migrations:/migrations:ro
-      - ./ops/migrate.sh:/migrate.sh:ro
-    entrypoint: ["/bin/bash","-lc"]
-    # Use bash to run the file so we don't rely on the executable bit on Windows
-    command: "bash /migrate.sh"
-    restart: "no"
-
   api:
     build:
       context: ./backend
     environment:
       DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
       JWT_SECRET: ${JWT_SECRET}
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     depends_on:
-      migrator:
-        condition: service_completed_successfully
+      db:
+        condition: service_healthy
+    volumes:
+      # If your SQLs are in the repo root "migrations/" folder:
+      - ./migrations:/app/migrations:ro
+      # (If they live in backend/migrations instead, use that path.)
     ports:
       - "5000:5000"
+
 
   web:
     build:
