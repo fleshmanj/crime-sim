@@ -1,4 +1,4 @@
--- db/migrations/2025_09_24_ncic_parity.sql
+-- db/migrations/0001_ncic_parity.sql
 'USSS_PROTECTIVE',
 'VIOLENT_CRIMINAL_GANG_MEMBER',
 'TERRORIST_MEMBER',
