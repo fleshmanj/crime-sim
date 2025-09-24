@@ -2,6 +2,8 @@ from sqlalchemy.dialects.postgresql import UUID, JSONB, ARRAY, ENUM as PGEnum
 from sqlalchemy import func
 from . import db
 import enum
+from werkzeug.security import generate_password_hash, check_password_hash
+
 
 
 class RecordType(enum.Enum):
@@ -63,3 +65,28 @@ class AuditLog(db.Model):
     action = db.Column(db.String(32), nullable=False)
     record_id = db.Column(UUID(as_uuid=True))
     context = db.Column(JSONB)
+class Role(enum.Enum):
+    ADMIN = "ADMIN"
+    ANALYST = "ANALYST"
+    DISPATCH_TRAINER = "DISPATCH_TRAINER"
+
+class User(db.Model):
+    __tablename__ = "users"
+
+    id = db.Column(UUID(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid())
+    email = db.Column(db.String(255), unique=True, nullable=False, index=True)
+    password_hash = db.Column(db.String(255), nullable=False)
+
+    # keep role as a simple string for flexibility (you’re already putting it in JWT claims)
+    role = db.Column(db.String(32), nullable=False, default=Role.ANALYST.value)
+    is_active = db.Column(db.Boolean, nullable=False, default=True)
+
+    created_at = db.Column(db.DateTime(timezone=True), server_default=func.now())
+    updated_at = db.Column(db.DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    # helpers
+    def set_password(self, password: str):
+        self.password_hash = generate_password_hash(password)
+
+    def check_password(self, password: str) -> bool:
+        return check_password_hash(self.password_hash, password)

@@ -21,10 +21,10 @@ def create_app():
     CORS(app, resources={r"/api/*": {"origins": app.config["CORS_ORIGINS"]}}, supports_credentials=True)
 
     from .routes_auth import bp as auth_bp
-    from .routes_incidents import bp as incidents_bp
+    from .routes_records import bp as records_bp
 
     app.register_blueprint(auth_bp, url_prefix="/api/auth")
-    app.register_blueprint(incidents_bp, url_prefix="/api/incidents")
+    app.register_blueprint(records_bp)
 
     @app.get("/api/health")
     def health():

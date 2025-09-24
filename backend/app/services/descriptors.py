@@ -1,5 +1,5 @@
 
-from backend.app.models import Descriptor
+from ..models import Descriptor
 def _norm(v: str) -> str:
     return ''.join((v or '').upper().split())
 
