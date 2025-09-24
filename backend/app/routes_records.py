@@ -5,7 +5,7 @@ from . import db
 from .models import Record, Descriptor, AuditLog, RecordType
 from .services.descriptors import build_descriptors, normalize
 from .authz import require_role
-from .policy import redact_payload  # create in step 2
+from .policy import redact_payload
 
 bp = Blueprint("records", __name__, url_prefix="/api/records")
 
@@ -14,7 +14,6 @@ bp = Blueprint("records", __name__, url_prefix="/api/records")
 def create_record():
     data = request.get_json(force=True)
 
-    # validate file_type
     try:
         rtype = RecordType(data["file_type"])
     except Exception:
@@ -66,7 +65,6 @@ def search_records():
         except Exception:
             abort(400, description="Invalid file_type")
 
-    # descriptor filters (NCIC search descriptors)
     keys = [
         "VIN","PLATE","SERIAL","NAME","DOB","FBI_NUMBER","SSN","DRIVERS_NUMBER","OAN",
         "HULL_NUMBER","REGISTRATION","ISSUER","OWNER_SSN","WARRANT_NUMBER","ORIGINATING_CASE_NUMBER"

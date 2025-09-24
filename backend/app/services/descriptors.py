@@ -1,6 +1,7 @@
-
 from ..models import Descriptor
+
 def _norm(v: str) -> str:
+    # Used only for building search filters — DB computes normalized_value
     return ''.join((v or '').upper().split())
 
 # Which payload keys to index per file type
@@ -20,6 +21,7 @@ INDEX_KEYS = {
 }
 
 def build_descriptors(record):
+    """Create Descriptor rows. DO NOT set normalized_value; Postgres generates it."""
     keys = INDEX_KEYS.get(record.file_type.value, [])
     payload = record.payload or {}
     rows = []
@@ -27,8 +29,9 @@ def build_descriptors(record):
         pk = K.lower()
         if pk in payload and payload[pk]:
             v = str(payload[pk])
-            rows.append(Descriptor(record_id=record.id, key=K, value=v, normalized_value=_norm(v)))
+            rows.append(Descriptor(record_id=record.id, key=K, value=v))
     return rows
 
 def normalize(v: str) -> str:
+    """For searching: normalize user input to match DB normalized_value."""
     return _norm(v)

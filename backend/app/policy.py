@@ -1,7 +1,6 @@
 SENSITIVE_KEYS = {"ssn", "owner_ssn"}
 
 def redact_payload(payload: dict, role: str):
-    # ADMIN/ANALYST can see everything
     if role in ("ADMIN", "ANALYST"):
         return payload
     red = dict(payload or {})
