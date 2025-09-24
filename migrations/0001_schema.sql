@@ -1,12 +1,9 @@
--- 0001_schema.sql
+﻿-- 0001_schema.sql
 -- Base schema: enum, tables, inline normalization, indexes, trigger.
 
 BEGIN;
 
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
-
--- If you ever had a normalize() function from an older attempt, drop it safely.
-DROP FUNCTION IF EXISTS normalize(text);
 
 -- enum used by records.file_type
 DO $$
