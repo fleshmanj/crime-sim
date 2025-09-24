@@ -9,6 +9,23 @@ from .policy import redact_payload
 
 bp = Blueprint("records", __name__, url_prefix="/api/records")
 
+def serialize_record(r, role: str, include_descriptors: bool = False):
+    item = {
+        "id": str(r.id),
+        "file_type": r.file_type.value,
+        "originating_agency": r.originating_agency,
+        "originating_case_number": r.originating_case_number,
+        "ncic_number": r.ncic_number,
+        "status": r.status,
+        "created_at": r.created_at.isoformat(),
+        "effective_until": r.effective_until.isoformat() if r.effective_until else None,
+        "payload": redact_payload(r.payload, role),
+    }
+    if include_descriptors:
+        ds = Descriptor.query.filter_by(record_id=r.id).order_by(Descriptor.key.asc()).all()
+        item["descriptors"] = [{"key": d.key, "value": d.value} for d in ds]
+    return item
+
 
 @bp.post("")
 @require_role(["ADMIN", "ANALYST"])
@@ -109,21 +126,7 @@ def search_records():
 
     rows = ordered.limit(limit).offset(offset).all()
 
-    items = []
-    for r in rows:
-        items.append(
-            {
-                "id": str(r.id),
-                "file_type": r.file_type.value,
-                "originating_agency": r.originating_agency,
-                "originating_case_number": r.originating_case_number,
-                "ncic_number": r.ncic_number,
-                "status": r.status,
-                "created_at": r.created_at.isoformat(),
-                "effective_until": r.effective_until.isoformat() if r.effective_until else None,
-                "payload": redact_payload(r.payload, role),
-            }
-        )
+    items = [serialize_record(r, role) for r in rows]
 
     # audit (non-blocking info only)
     db.session.add(
@@ -152,6 +155,27 @@ def search_records():
         }
     )
 
+@bp.get("/<rid>")
+@require_role(["ADMIN", "ANALYST", "DISPATCH_TRAINER"])
+def get_record(rid):
+    rec = Record.query.get(rid)
+    if not rec:
+        abort(404)
+    role = (get_jwt() or {}).get("role", "ANALYST")
+    include_desc = request.args.get("include_descriptors") == "1"
+    out = serialize_record(rec, role, include_desc)
+
+    db.session.add(
+        AuditLog(
+            action="READ",
+            actor_id=get_jwt_identity(),
+            actor_role=role,
+            record_id=rec.id,
+            context={"include_descriptors": include_desc},
+        )
+    )
+    db.session.commit()
+    return jsonify(out)
 
 @bp.post("/clear/<rid>")
 @require_role(["ADMIN", "ANALYST"])

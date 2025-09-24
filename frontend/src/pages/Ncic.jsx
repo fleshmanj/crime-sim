@@ -1,5 +1,5 @@
 // frontend/src/pages/Ncic.jsx
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "../api.js";
 import "./Ncic.css";
@@ -27,12 +27,13 @@ const INDEX_KEYS = {
   TERRORIST_MEMBER: ["NAME","DOB"],
 };
 
-const MAX_ALL = 20000; // hard ceiling for "Show all"
+const ALL_LIMIT = 5000; // big enough for your 3.5k dataset
 
 function prettyDate(iso) {
   if (!iso) return "";
   try { return new Date(iso).toLocaleString(); } catch { return iso; }
 }
+
 function badgeClass(status) {
   if (!status) return "badge";
   const s = String(status).toUpperCase();
@@ -40,6 +41,7 @@ function badgeClass(status) {
   if (s === "CLEARED" || s === "CLOSED") return "badge closed";
   return "badge referred";
 }
+
 function headline(r) {
   const p = r.payload || {};
   switch (r.file_type) {
@@ -53,30 +55,10 @@ function headline(r) {
   }
 }
 
-// ---- API helpers ----
-async function fetchPage(params = {}) {
-  const res = await api.get("/records", { params });
-  // backend returns { items, limit, offset, returned, has_more }
-  return res.data || { items: [] };
-}
-
-async function fetchAll(params, pageSize = 1000) {
-  let offset = 0;
-  const seen = new Set();
-  const all = [];
-  // loop until no more
-  // relies on backend offset support (added in the patch above)
-  // if offset gets ignored for some reason, duplicate detection stops runaway loops
-  for (;;) {
-    const { items = [] } = await fetchPage({ ...params, limit: pageSize, offset });
-    let added = 0;
-    for (const r of items) {
-      if (!seen.has(r.id)) { seen.add(r.id); all.push(r); added++; }
-    }
-    if (items.length < pageSize || !added || all.length >= MAX_ALL) break;
-    offset += items.length;
-  }
-  return all;
+// Always fetch "all" matching rows (no server pagination)
+async function fetchAllRecords(params = {}) {
+  const res = await api.get("/records", { params: { ...params, limit: ALL_LIMIT } });
+  return res.data?.items ?? [];
 }
 
 export default function Ncic() {
@@ -84,16 +66,18 @@ export default function Ncic() {
   const [fileType, setFileType] = useState("WANTED_PERSON");
   const [filters, setFilters] = useState({});
 
-  // UI paging (client) + server params
+  // client-side pagination
   const [pageSize, setPageSize] = useState(250);
   const [page, setPage] = useState(0);
   const [showAll, setShowAll] = useState(false);
   const [stamp, setStamp] = useState(0);
 
+  // modal
+  const [activeId, setActiveId] = useState(null);
+
   const keys = INDEX_KEYS[fileType] || [];
 
-  // Build base query params (without limit/offset)
-  const baseParams = useMemo(() => {
+  const queryParams = useMemo(() => {
     const p = { file_type: fileType };
     for (const [k, v] of Object.entries(filters)) {
       if (v && String(v).trim()) p[k] = v.trim();
@@ -101,31 +85,20 @@ export default function Ncic() {
     return p;
   }, [fileType, filters]);
 
-  const qKey = useMemo(
-    () => ["ncic", baseParams, { page, pageSize, showAll }, stamp],
-    [baseParams, page, pageSize, showAll, stamp]
-  );
-
   const { data = [], isFetching, refetch } = useQuery({
-    queryKey: qKey,
-    queryFn: async () => {
-      if (showAll) {
-        return await fetchAll(baseParams, Math.min(pageSize, 1000));
-      }
-      const { items } = await fetchPage({ ...baseParams, limit: pageSize, offset: page * pageSize });
-      return items;
-    },
+    queryKey: ["ncic-all", queryParams, stamp],
+    queryFn: () => fetchAllRecords(queryParams),
     keepPreviousData: true,
   });
 
-  // Client-side slice (in case server returns bigger chunks or showAll)
+  // client-side slice
   const total = data.length;
   const startIdx = page * pageSize;
   const endIdx = Math.min(total, startIdx + pageSize);
-  const pageRows = showAll ? data.slice(startIdx, endIdx) : data;
+  const pageRows = showAll ? data : data.slice(startIdx, endIdx);
 
-  const canPrev = page > 0;
-  const canNext = endIdx < total;
+  const canPrev = !showAll && page > 0;
+  const canNext = !showAll && endIdx < total;
 
   function setF(k, v) { setFilters((s) => ({ ...s, [k]: v })); }
   function clearFilters() {
@@ -142,6 +115,27 @@ export default function Ncic() {
   const chips = Object.entries(filters)
     .filter(([_,v]) => v && String(v).trim())
     .map(([k,v]) => ({ k, v: String(v).trim() }));
+
+  function openDetails(id) { setActiveId(id); }
+  function closeDetails() { setActiveId(null); }
+
+  // fetch detail for modal
+  const { data: detail, isFetching: loadingDetail, refetch: refetchDetail } = useQuery({
+    queryKey: ["ncic-detail", activeId],
+    queryFn: async () => {
+      const res = await api.get(`/records/${encodeURIComponent(activeId)}`, { params: { include_descriptors: 1 }});
+      return res.data;
+    },
+    enabled: !!activeId,
+    staleTime: 30_000,
+  });
+
+  // close on ESC
+  useEffect(() => {
+    function onKey(e) { if (e.key === "Escape") closeDetails(); }
+    if (activeId) window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [activeId]);
 
   return (
     <div className="search-page">
@@ -192,39 +186,42 @@ export default function Ncic() {
       {/* RESULTS */}
       <section className="results-pane">
         <div className="results-head" style={{gap:12}}>
-          <span className="count">{pageRows.length}</span>
+          <span className="count">{showAll ? total : pageRows.length}</span>
           <span className="muted tiny">
             {showAll
-              ? (total ? `items (${startIdx + 1}–${endIdx} of ${total})` : "items (showing all)")
-              : "items (this page)"}
+              ? `items (showing all ${total})`
+              : total
+                ? `items (${startIdx + 1}–${endIdx} of ${total})`
+                : "items"}
           </span>
 
-          <div style={{marginLeft:"auto", display:"flex", gap:8, alignItems:"center"}}>
+        <div style={{marginLeft:"auto", display:"flex", gap:8, alignItems:"center"}}>
             <label className="tiny muted" htmlFor="pageSize">Page size</label>
             <select
               id="pageSize"
               className="ghost sm"
+              disabled={showAll}
               value={pageSize}
               onChange={(e)=>{ setPageSize(Number(e.target.value)); setPage(0); }}
             >
               {[50,100,250,500,1000].map(n => <option key={n} value={n}>{n}</option>)}
             </select>
 
+            <button className="ghost sm" disabled={showAll || !canPrev || isFetching} onClick={()=> setPage(p => Math.max(0, p-1))}>
+              ◀ Prev
+            </button>
+            <button className="ghost sm" disabled={showAll || !canNext || isFetching} onClick={()=> setPage(p => p+1)}>
+              Next ▶
+            </button>
+
             <label style={{display:"flex", gap:6, alignItems:"center"}} className="tiny muted">
               <input
                 type="checkbox"
                 checked={showAll}
-                onChange={(e)=>{ setShowAll(e.target.checked); setPage(0); setStamp(s=>s+1); }}
+                onChange={(e)=>{ setShowAll(e.target.checked); setPage(0); }}
               />
-              Show all (batch)
+              Show all
             </label>
-
-            <button className="ghost sm" disabled={!canPrev || isFetching} onClick={()=> setPage(p => Math.max(0, p-1))}>
-              ◀ Prev
-            </button>
-            <button className="ghost sm" disabled={!canNext || isFetching} onClick={()=> setPage(p => p+1)}>
-              Next ▶
-            </button>
 
             <button className="ghost sm" onClick={()=>refetch()} disabled={isFetching}>
               {isFetching ? "Refreshing…" : "Refresh"}
@@ -241,7 +238,14 @@ export default function Ncic() {
         ) : (
           <ul className="card-list">
             {pageRows.map((r) => (
-              <li key={r.id} className="card">
+              <li
+                key={r.id}
+                className="card"
+                role="button"
+                tabIndex={0}
+                onClick={() => openDetails(r.id)}
+                onKeyDown={(e)=> (e.key === "Enter" ? openDetails(r.id) : null)}
+              >
                 <div className="card-top">
                   <span className={badgeClass(r.status)}>{r.status || "—"}</span>
                   <span className="case">{r.originating_case_number || r.ncic_number || r.originating_agency || "—"}</span>
@@ -259,6 +263,49 @@ export default function Ncic() {
           </ul>
         )}
       </section>
+
+      {/* MODAL */}
+      {activeId && (
+        <div className="modal-backdrop" onClick={closeDetails}>
+          <div className="modal" onClick={(e)=>e.stopPropagation()}>
+            <div className="modal-head">
+              <h3>Case Details</h3>
+              <button className="ghost sm" onClick={closeDetails}>Close ✕</button>
+            </div>
+            {!detail || loadingDetail ? (
+              <p className="muted">Loading…</p>
+            ) : (
+              <div className="modal-body">
+                <div className="kv">
+                  <div><span className="muted tiny">Type</span><div>{detail.file_type}</div></div>
+                  <div><span className="muted tiny">Status</span><div>{detail.status}</div></div>
+                  <div><span className="muted tiny">Agency</span><div>{detail.originating_agency || "—"}</div></div>
+                  <div><span className="muted tiny">Case #</span><div>{detail.originating_case_number || "—"}</div></div>
+                  <div><span className="muted tiny">NCIC #</span><div>{detail.ncic_number || "—"}</div></div>
+                  <div><span className="muted tiny">Created</span><div>{prettyDate(detail.created_at)}</div></div>
+                  {detail.effective_until && (
+                    <div><span className="muted tiny">Effective until</span><div>{prettyDate(detail.effective_until)}</div></div>
+                  )}
+                </div>
+
+                {detail.descriptors?.length ? (
+                  <>
+                    <h4 style={{marginTop:12}}>Descriptors</h4>
+                    <ul className="desc-list">
+                      {detail.descriptors.map((d,i)=>(
+                        <li key={i}><b>{d.key}</b>: {d.value}</li>
+                      ))}
+                    </ul>
+                  </>
+                ) : null}
+
+                <h4 style={{marginTop:12}}>Payload</h4>
+                <pre className="json">{JSON.stringify(detail.payload ?? {}, null, 2)}</pre>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
