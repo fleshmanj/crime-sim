@@ -1,8 +1,10 @@
-import { useEffect, useMemo, useState } from "react";
-import { ncicApi } from "../api.ncic";
-import "./IncidentsSearch.css"; // reuse your existing table/layout styles
+// frontend/src/pages/Ncic.jsx
+import { useMemo, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { api } from "../api.js";
+import "./Ncic.css";
 
-// Keep this in sync with backend/app/services/descriptors.py (INDEX_KEYS)
+/** Keep in sync with backend/app/services/descriptors.py */
 const FILE_TYPES = [
   "WANTED_PERSON","FOREIGN_FUGITIVE","MISSING_PERSON","UNIDENTIFIED_PERSON",
   "STOLEN_VEHICLE","STOLEN_LICENSE_PLATE","STOLEN_BOAT","STOLEN_GUN",
@@ -25,135 +27,210 @@ const INDEX_KEYS = {
   TERRORIST_MEMBER: ["NAME","DOB"],
 };
 
-function Field({ id, label, value, onChange }) {
-  return (
-    <div className="field">
-      <label htmlFor={id}>{label}</label>
-      <input id={id} value={value} onChange={(e)=>onChange(e.target.value)} placeholder={label}/>
-    </div>
-  );
+const ALL_LIMIT = 5000; // big enough to cover your ~3.5k seed
+
+function prettyDate(iso) {
+  if (!iso) return "";
+  try { return new Date(iso).toLocaleString(); } catch { return iso; }
 }
 
-export default function NcicSearch() {
-  const [fileTypeSearch, setFileTypeSearch] = useState("WANTED_PERSON");
-  const [fileTypeCreate, setFileTypeCreate] = useState("WANTED_PERSON");
-  const [searchVals, setSearchVals] = useState({});
-  const [createVals, setCreateVals] = useState({});
-  const [payloadJson, setPayloadJson] = useState("");
-  const [rows, setRows] = useState([]);
+function badgeClass(status) {
+  if (!status) return "badge";
+  const s = String(status).toUpperCase();
+  if (s === "ACTIVE") return "badge open";
+  if (s === "CLEARED" || s === "CLOSED") return "badge closed";
+  return "badge referred";
+}
 
-  const searchKeys = INDEX_KEYS[fileTypeSearch] || [];
-  const createKeys = INDEX_KEYS[fileTypeCreate] || [];
+function headline(r) {
+  const p = r.payload || {};
+  switch (r.file_type) {
+    case "WANTED_PERSON": return p.name || "(unknown subject)";
+    case "MISSING_PERSON": return p.name || "(missing person)";
+    case "STOLEN_VEHICLE": return p.plate || p.vin || "(vehicle)";
+    case "STOLEN_GUN": return p.serial || "(firearm)";
+    case "STOLEN_LICENSE_PLATE": return p.plate || "(plate)";
+    case "STOLEN_ARTICLE": return p.serial || p.oan || "(article)";
+    default: return p.name || p.serial || p.vin || p.plate || r.file_type;
+  }
+}
 
-  function setSearchKey(k, v) { setSearchVals(s => ({...s, [k]: v})); }
-  function setCreateKey(k, v) { setCreateVals(s => ({...s, [k]: v})); }
+// API call — always fetch "all" that match the filter (no server pagination)
+async function fetchAllRecords(params = {}) {
+  const res = await api.get("/records", { params: { ...params, limit: ALL_LIMIT } });
+  return res.data?.items ?? [];
+}
 
-  async function doSearch() {
-    const params = { file_type: fileTypeSearch, limit: 100, ...searchVals };
-    Object.keys(params).forEach(k => { if (params[k] === "" || params[k] == null) delete params[k]; });
-    try {
-      const res = await ncicApi.searchRecords(params);
-      setRows((res.items || []).map(r => ({
-        ...r,
-        created_at_str: r.created_at ? new Date(r.created_at).toLocaleString() : "",
-        effective_until_str: r.effective_until ? new Date(r.effective_until).toLocaleString() : "",
-        payload_str: JSON.stringify(r.payload ?? {}, null, 0),
-      })));
-    } catch (e) { console.error(e); alert(e.message); }
+export default function Ncic() {
+  // filters
+  const [fileType, setFileType] = useState("WANTED_PERSON");
+  const [filters, setFilters] = useState({});
+
+  // client-side pagination
+  const [pageSize, setPageSize] = useState(250);
+  const [page, setPage] = useState(0);
+  const [showAll, setShowAll] = useState(false);
+  const [stamp, setStamp] = useState(0); // bump to force refetch
+
+  const keys = INDEX_KEYS[fileType] || [];
+
+  const queryParams = useMemo(() => {
+    const p = { file_type: fileType };
+    for (const [k, v] of Object.entries(filters)) {
+      if (v && String(v).trim()) p[k] = v.trim();
+    }
+    return p;
+  }, [fileType, filters]);
+
+  const { data = [], isFetching, refetch } = useQuery({
+    queryKey: ["ncic-all", queryParams, stamp],
+    queryFn: () => fetchAllRecords(queryParams),
+    keepPreviousData: true,
+  });
+
+  // client-side slice
+  const total = data.length;
+  const startIdx = page * pageSize;
+  const endIdx = Math.min(total, startIdx + pageSize);
+  const pageRows = showAll ? data : data.slice(startIdx, endIdx);
+
+  const canPrev = !showAll && page > 0;
+  const canNext = !showAll && endIdx < total;
+
+  function setF(k, v) { setFilters((s) => ({ ...s, [k]: v })); }
+  function clearFilters() {
+    setFilters({});
+    setPage(0);
+    setStamp((s) => s + 1);
+  }
+  function doSearch() {
+    setPage(0);
+    setStamp((s) => s + 1);
+    refetch();
   }
 
-  async function doCreate() {
-    const base = {
-      file_type: fileTypeCreate,
-      originating_agency: "FBI-CJIS",
-      payload: {},
-    };
-    // descriptor inputs -> payload (lowercase)
-    for (const [K,V] of Object.entries(createVals)) {
-      if (V && V.trim()) base.payload[K.toLowerCase()] = V.trim();
-    }
-    if (payloadJson.trim()) {
-      try { Object.assign(base.payload, JSON.parse(payloadJson)); }
-      catch { return alert("Invalid JSON in advanced payload"); }
-    }
-    try {
-      const out = await ncicApi.createRecord(base);
-      alert(`Created: ${out.id}`);
-      await doSearch();
-    } catch (e) { console.error(e); alert(e.message); }
-  }
-
-  useEffect(() => { doSearch(); /* initial */ }, []);
+  const chips = Object.entries(filters)
+    .filter(([_,v]) => v && String(v).trim())
+    .map(([k,v]) => ({ k, v: String(v).trim() }));
 
   return (
-    <div className="page">
-      <h1>NCIC Records</h1>
+    <div className="search-page">
+      {/* FILTER BAR */}
+      <section className="filter-bar">
+        <div className="fb-head">
+          <h2>NCIC Search</h2>
+          <div className="fb-actions">
+            <button className="ghost" onClick={clearFilters}>Clear</button>
+            <button className="primary" onClick={doSearch} disabled={isFetching}>
+              {isFetching ? "Searching…" : "Search"}
+            </button>
+          </div>
+        </div>
 
-      <section className="card">
-        <h2>Search</h2>
-        <div className="grid">
-          <div className="field">
+        <div className="fb-grid">
+          <div className="fb-field span-2">
             <label>File Type</label>
-            <select value={fileTypeSearch} onChange={e=>{ setFileTypeSearch(e.target.value); setSearchVals({}); }}>
+            <select
+              value={fileType}
+              onChange={(e)=>{ setFileType(e.target.value); setFilters({}); setPage(0); }}
+            >
               {FILE_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
             </select>
           </div>
-          {searchKeys.map(k => (
-            <Field key={k} id={`s-${k}`} label={k} value={searchVals[k] || ""} onChange={(v)=>setSearchKey(k,v)} />
+
+          {keys.map(k => (
+            <div key={k} className="fb-field">
+              <label>{k}</label>
+              <input
+                value={filters[k] || ""}
+                onChange={(e)=>setF(k, e.target.value)}
+                placeholder={k}
+              />
+            </div>
           ))}
-          <div className="row">
-            <button onClick={doSearch}>Search</button>
+
+          <div className="fb-chiprow">
+            {chips.length ? chips.map(({k,v}) => (
+              <span key={k} className="chip" title="Click to remove" onClick={()=> setF(k, "")}>
+                <span className="dot"></span>{k}: {v}
+              </span>
+            )) : <span className="muted tiny">No filters</span>}
           </div>
         </div>
       </section>
 
-      <section className="card">
-        <h2>Create Record</h2>
-        <div className="grid">
-          <div className="field">
-            <label>File Type</label>
-            <select value={fileTypeCreate} onChange={e=>{ setFileTypeCreate(e.target.value); setCreateVals({}); }}>
-              {FILE_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
-            </select>
-          </div>
-          {createKeys.map(k => (
-            <Field key={k} id={`c-${k}`} label={k} value={createVals[k] || ""} onChange={(v)=>setCreateKey(k,v)} />
-          ))}
-          <details className="field row">
-            <summary>Advanced JSON payload (optional)</summary>
-            <textarea rows={6} value={payloadJson} onChange={e=>setPayloadJson(e.target.value)} placeholder='{"temporary_felony_want": true}'/>
-          </details>
-          <div className="row">
-            <button onClick={doCreate}>Create</button>
-          </div>
-          <p className="muted row">For a <b>Temporary Felony Want</b>, include <code>temporary_felony_want: true</code> in the payload.</p>
-        </div>
-      </section>
+      {/* RESULTS */}
+      <section className="results-pane">
+        <div className="results-head" style={{gap:12}}>
+          <span className="count">{showAll ? total : pageRows.length}</span>
+          <span className="muted tiny">
+            {showAll
+              ? `items (showing all ${total})`
+              : total
+                ? `items (${startIdx + 1}–${endIdx} of ${total})`
+                : "items"}
+          </span>
 
-      <section className="card">
-        <h2>Results</h2>
-        <div className="tableWrap">
-          <table className="table">
-            <thead>
-              <tr><th>Type</th><th>Agency</th><th>Status</th><th>Created</th><th>Effective Until</th><th>Payload</th></tr>
-            </thead>
-            <tbody>
-              {rows.map(r => (
-                <tr key={r.id}>
-                  <td>{r.file_type}</td>
-                  <td>{r.originating_agency || ""}</td>
-                  <td><span className={`badge ${r.status}`}>{r.status}</span></td>
-                  <td>{r.created_at_str}</td>
-                  <td>{r.effective_until_str}</td>
-                  <td><code className="small">{r.payload_str}</code></td>
-                </tr>
-              ))}
-              {!rows.length && (
-                <tr><td colSpan={6} className="muted">No results</td></tr>
-              )}
-            </tbody>
-          </table>
+          <div style={{marginLeft:"auto", display:"flex", gap:8, alignItems:"center"}}>
+            <label className="tiny muted" htmlFor="pageSize">Page size</label>
+            <select
+              id="pageSize"
+              className="ghost sm"
+              disabled={showAll}
+              value={pageSize}
+              onChange={(e)=>{ setPageSize(Number(e.target.value)); setPage(0); }}
+            >
+              {[50,100,250,500,1000].map(n => <option key={n} value={n}>{n}</option>)}
+            </select>
+
+            <button className="ghost sm" disabled={showAll || !canPrev || isFetching} onClick={()=> setPage(p => Math.max(0, p-1))}>
+              ◀ Prev
+            </button>
+            <button className="ghost sm" disabled={showAll || !canNext || isFetching} onClick={()=> setPage(p => p+1)}>
+              Next ▶
+            </button>
+
+            <label style={{display:"flex", gap:6, alignItems:"center"}} className="tiny muted">
+              <input
+                type="checkbox"
+                checked={showAll}
+                onChange={(e)=>{ setShowAll(e.target.checked); setPage(0); }}
+              />
+              Show all
+            </label>
+
+            <button className="ghost sm" onClick={()=>refetch()} disabled={isFetching}>
+              {isFetching ? "Refreshing…" : "Refresh"}
+            </button>
+          </div>
         </div>
+
+        {pageRows.length === 0 ? (
+          <div className="empty">
+            <div className="halo"></div>
+            <h3>No results</h3>
+            <p className="muted">Try adjusting filters or file type.</p>
+          </div>
+        ) : (
+          <ul className="card-list">
+            {pageRows.map((r) => (
+              <li key={r.id} className="card">
+                <div className="card-top">
+                  <span className={badgeClass(r.status)}>{r.status || "—"}</span>
+                  <span className="case">{r.originating_case_number || r.ncic_number || r.originating_agency || "—"}</span>
+                </div>
+                <div className="card-main">
+                  <div className="offense">{headline(r)}</div>
+                  <div className="loc">{r.file_type} • {r.originating_agency || "Unknown agency"}</div>
+                </div>
+                <div className="meta">
+                  <span>created:</span><time>{prettyDate(r.created_at)}</time>
+                  {r.effective_until && (<><span>• effective until:</span><time>{prettyDate(r.effective_until)}</time></>)}
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
       </section>
     </div>
   );

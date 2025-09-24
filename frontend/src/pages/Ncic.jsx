@@ -27,11 +27,12 @@ const INDEX_KEYS = {
   TERRORIST_MEMBER: ["NAME","DOB"],
 };
 
+const MAX_ALL = 20000; // hard ceiling for "Show all"
+
 function prettyDate(iso) {
   if (!iso) return "";
   try { return new Date(iso).toLocaleString(); } catch { return iso; }
 }
-
 function badgeClass(status) {
   if (!status) return "badge";
   const s = String(status).toUpperCase();
@@ -39,7 +40,6 @@ function badgeClass(status) {
   if (s === "CLEARED" || s === "CLOSED") return "badge closed";
   return "badge referred";
 }
-
 function headline(r) {
   const p = r.payload || {};
   switch (r.file_type) {
@@ -53,10 +53,30 @@ function headline(r) {
   }
 }
 
-// API call
-async function fetchRecords(params = {}) {
+// ---- API helpers ----
+async function fetchPage(params = {}) {
   const res = await api.get("/records", { params });
-  return res.data?.items ?? [];
+  // backend returns { items, limit, offset, returned, has_more }
+  return res.data || { items: [] };
+}
+
+async function fetchAll(params, pageSize = 1000) {
+  let offset = 0;
+  const seen = new Set();
+  const all = [];
+  // loop until no more
+  // relies on backend offset support (added in the patch above)
+  // if offset gets ignored for some reason, duplicate detection stops runaway loops
+  for (;;) {
+    const { items = [] } = await fetchPage({ ...params, limit: pageSize, offset });
+    let added = 0;
+    for (const r of items) {
+      if (!seen.has(r.id)) { seen.add(r.id); all.push(r); added++; }
+    }
+    if (items.length < pageSize || !added || all.length >= MAX_ALL) break;
+    offset += items.length;
+  }
+  return all;
 }
 
 export default function Ncic() {
@@ -64,59 +84,64 @@ export default function Ncic() {
   const [fileType, setFileType] = useState("WANTED_PERSON");
   const [filters, setFilters] = useState({});
 
-  // paging
-  const [pageSize, setPageSize] = useState(250);  // default bigger than 100
-  const [page, setPage] = useState(0);           // zero-based
-  const [showAll, setShowAll] = useState(false); // toggles huge limit to pull everything
-  const [stamp, setStamp] = useState(0);         // bump to force refetch
+  // UI paging (client) + server params
+  const [pageSize, setPageSize] = useState(250);
+  const [page, setPage] = useState(0);
+  const [showAll, setShowAll] = useState(false);
+  const [stamp, setStamp] = useState(0);
 
   const keys = INDEX_KEYS[fileType] || [];
 
-  // Build query params
-  const params = useMemo(() => {
+  // Build base query params (without limit/offset)
+  const baseParams = useMemo(() => {
     const p = { file_type: fileType };
-    // add descriptor filters
     for (const [k, v] of Object.entries(filters)) {
       if (v && String(v).trim()) p[k] = v.trim();
     }
-    if (showAll) {
-      // pull "everything" – adjust if you exceed this ceiling
-      p.limit = 5000;
-      p.offset = 0;
-    } else {
-      p.limit = pageSize;
-      p.offset = page * pageSize;          // works if backend supports offset
-      // if your backend does not support offset, you'll still get the first page.
-      // Flip "Show all" to fetch everything in one go.
-    }
     return p;
-  }, [fileType, filters, pageSize, page, showAll, stamp]);
+  }, [fileType, filters]);
+
+  const qKey = useMemo(
+    () => ["ncic", baseParams, { page, pageSize, showAll }, stamp],
+    [baseParams, page, pageSize, showAll, stamp]
+  );
 
   const { data = [], isFetching, refetch } = useQuery({
-    queryKey: ["ncic", params],
-    queryFn: () => fetchRecords(params),
+    queryKey: qKey,
+    queryFn: async () => {
+      if (showAll) {
+        return await fetchAll(baseParams, Math.min(pageSize, 1000));
+      }
+      const { items } = await fetchPage({ ...baseParams, limit: pageSize, offset: page * pageSize });
+      return items;
+    },
     keepPreviousData: true,
   });
+
+  // Client-side slice (in case server returns bigger chunks or showAll)
+  const total = data.length;
+  const startIdx = page * pageSize;
+  const endIdx = Math.min(total, startIdx + pageSize);
+  const pageRows = showAll ? data.slice(startIdx, endIdx) : data;
+
+  const canPrev = page > 0;
+  const canNext = endIdx < total;
 
   function setF(k, v) { setFilters((s) => ({ ...s, [k]: v })); }
   function clearFilters() {
     setFilters({});
     setPage(0);
-    setStamp(s => s + 1);
+    setStamp((s) => s + 1);
   }
   function doSearch() {
     setPage(0);
-    setStamp(s => s + 1);
+    setStamp((s) => s + 1);
     refetch();
   }
 
   const chips = Object.entries(filters)
     .filter(([_,v]) => v && String(v).trim())
     .map(([k,v]) => ({ k, v: String(v).trim() }));
-
-  const canPrev = !showAll && page > 0;
-  // If backend supports offset, fewer than pageSize means last page
-  const canNext = !showAll && data.length === pageSize;
 
   return (
     <div className="search-page">
@@ -167,36 +192,39 @@ export default function Ncic() {
       {/* RESULTS */}
       <section className="results-pane">
         <div className="results-head" style={{gap:12}}>
-          <span className="count">{data.length}</span>
-          <span className="muted tiny">{showAll ? "items (showing all)" : "items (this page)"}</span>
+          <span className="count">{pageRows.length}</span>
+          <span className="muted tiny">
+            {showAll
+              ? (total ? `items (${startIdx + 1}–${endIdx} of ${total})` : "items (showing all)")
+              : "items (this page)"}
+          </span>
 
           <div style={{marginLeft:"auto", display:"flex", gap:8, alignItems:"center"}}>
             <label className="tiny muted" htmlFor="pageSize">Page size</label>
             <select
               id="pageSize"
               className="ghost sm"
-              disabled={showAll}
               value={pageSize}
               onChange={(e)=>{ setPageSize(Number(e.target.value)); setPage(0); }}
             >
               {[50,100,250,500,1000].map(n => <option key={n} value={n}>{n}</option>)}
             </select>
 
-            <button className="ghost sm" disabled={showAll || !canPrev || isFetching} onClick={()=> setPage(p => Math.max(0, p-1))}>
-              ◀ Prev
-            </button>
-            <button className="ghost sm" disabled={showAll || !canNext || isFetching} onClick={()=> setPage(p => p+1)}>
-              Next ▶
-            </button>
-
             <label style={{display:"flex", gap:6, alignItems:"center"}} className="tiny muted">
               <input
                 type="checkbox"
                 checked={showAll}
-                onChange={(e)=>{ setShowAll(e.target.checked); setPage(0); }}
+                onChange={(e)=>{ setShowAll(e.target.checked); setPage(0); setStamp(s=>s+1); }}
               />
-              Show all
+              Show all (batch)
             </label>
+
+            <button className="ghost sm" disabled={!canPrev || isFetching} onClick={()=> setPage(p => Math.max(0, p-1))}>
+              ◀ Prev
+            </button>
+            <button className="ghost sm" disabled={!canNext || isFetching} onClick={()=> setPage(p => p+1)}>
+              Next ▶
+            </button>
 
             <button className="ghost sm" onClick={()=>refetch()} disabled={isFetching}>
               {isFetching ? "Refreshing…" : "Refresh"}
@@ -204,7 +232,7 @@ export default function Ncic() {
           </div>
         </div>
 
-        {data.length === 0 ? (
+        {pageRows.length === 0 ? (
           <div className="empty">
             <div className="halo"></div>
             <h3>No results</h3>
@@ -212,7 +240,7 @@ export default function Ncic() {
           </div>
         ) : (
           <ul className="card-list">
-            {data.map((r) => (
+            {pageRows.map((r) => (
               <li key={r.id} className="card">
                 <div className="card-top">
                   <span className={badgeClass(r.status)}>{r.status || "—"}</span>
