@@ -1,26 +1,65 @@
+from sqlalchemy.dialects.postgresql import UUID, JSONB, ARRAY, ENUM as PGEnum
+from sqlalchemy import func
 from . import db
-from datetime import datetime
-from werkzeug.security import generate_password_hash, check_password_hash
+import enum
 
-class User(db.Model):
-    __tablename__ = "users"  # <-- rename
-    id = db.Column(db.Integer, primary_key=True)
-    email = db.Column(db.String(255), unique=True, nullable=False)
-    password_hash = db.Column(db.String(255), nullable=False)
-    role = db.Column(db.String(50), default="Analyst")
-    is_active = db.Column(db.Boolean, default=True)
 
-    def set_password(self, raw):
-        self.password_hash = generate_password_hash(raw)
+class RecordType(enum.Enum):
+    WANTED_PERSON = 'WANTED_PERSON'
+    FOREIGN_FUGITIVE = 'FOREIGN_FUGITIVE'
+    MISSING_PERSON = 'MISSING_PERSON'
+    UNIDENTIFIED_PERSON = 'UNIDENTIFIED_PERSON'
+    STOLEN_VEHICLE = 'STOLEN_VEHICLE'
+    STOLEN_LICENSE_PLATE = 'STOLEN_LICENSE_PLATE'
+    STOLEN_BOAT = 'STOLEN_BOAT'
+    STOLEN_GUN = 'STOLEN_GUN'
+    STOLEN_ARTICLE = 'STOLEN_ARTICLE'
+    SECURITY = 'SECURITY'
+    USSS_PROTECTIVE = 'USSS_PROTECTIVE'
+    VIOLENT_CRIMINAL_GANG_MEMBER = 'VIOLENT_CRIMINAL_GANG_MEMBER'
+    TERRORIST_MEMBER = 'TERRORIST_MEMBER'
+    BATF_VIOLENT_FELON = 'BATF_VIOLENT_FELON'
+    WITSEC_CHARGED = 'WITSEC_CHARGED'
+    INTERSTATE_ID_INDEX = 'INTERSTATE_ID_INDEX'
 
-    def check_password(self, raw):
-        return check_password_hash(self.password_hash, raw)
 
-class Incident(db.Model):
-    __tablename__ = "incidents"  # optional, but clearer
-    id = db.Column(db.Integer, primary_key=True)
-    case_no = db.Column(db.String(32), index=True)
-    occurred_at = db.Column(db.DateTime, default=datetime.utcnow, index=True)
-    location = db.Column(db.String(255))
-    offense_code = db.Column(db.String(64), index=True)
-    status = db.Column(db.String(32), default="OPEN", index=True)
+class Record(db.Model):
+    __tablename__ = 'records'
+
+    id = db.Column(UUID(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid())
+    # Bind to existing Postgres ENUM type `record_type`
+    file_type = db.Column(PGEnum(RecordType, name='record_type', create_type=False), nullable=False)
+    payload = db.Column(JSONB, nullable=False)
+
+    originating_agency = db.Column(db.String(128), nullable=False)
+    originating_case_number = db.Column(db.String(64))
+    ncic_number = db.Column(db.String(32))
+    status = db.Column(db.String(24), default='ACTIVE')
+
+    created_at = db.Column(db.DateTime(timezone=True), server_default=func.now())
+    updated_at = db.Column(db.DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    effective_until = db.Column(db.DateTime(timezone=True))
+    tags = db.Column(ARRAY(db.Text), default=list)
+
+
+class Descriptor(db.Model):
+    __tablename__ = 'descriptors'
+
+    id = db.Column(db.BigInteger, primary_key=True)
+    record_id = db.Column(UUID(as_uuid=True), db.ForeignKey('records.id', ondelete='CASCADE'))
+    key = db.Column(db.String(64), nullable=False)
+    value = db.Column(db.Text, nullable=False)
+    # NOTE: in SQL this is a generated column; SQLAlchemy doesn't need to re-declare that.
+    normalized_value = db.Column(db.Text, nullable=False)
+
+
+class AuditLog(db.Model):
+    __tablename__ = 'audit_log'
+
+    id = db.Column(db.BigInteger, primary_key=True)
+    occurred_at = db.Column(db.DateTime(timezone=True), server_default=func.now())
+    actor_id = db.Column(UUID(as_uuid=True))
+    actor_role = db.Column(db.String(64))
+    action = db.Column(db.String(32), nullable=False)
+    record_id = db.Column(UUID(as_uuid=True))
+    context = db.Column(JSONB)
