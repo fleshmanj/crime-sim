@@ -30,7 +30,6 @@
   display:flex; align-items:center; gap:12px; margin-bottom:10px;
 }
 .fb-head h2{ margin:0; font-size:20px; color:var(--ink); }
-.fb-actions{ margin-left:auto; display:flex; gap:8px; }
 
 .fb-grid{
   display:grid;
@@ -90,7 +89,7 @@
   background: rgba(255,255,255,.08);
   border: 1px solid rgba(255,255,255,.18);
   color: var(--ink);
-  border-radius: 10px; height: 36px; padding: 0 12px; cursor: pointer;
+  border-radius: 10px; height: 36px; padding: 0 14px; cursor: pointer;
 }
 .ghost.sm{ height:30px; font-size:12px; }
 .ghost:focus-visible{ outline: none; box-shadow: 0 0 0 4px var(--ring); border-color: var(--accent); }
@@ -195,4 +194,25 @@ button, .chip{ transition: box-shadow .15s ease, border-color .15s ease, backgro
 .modal::-webkit-scrollbar-thumb{
   background: rgba(190,210,255,.25);
   border-radius: 999px;
+}
+
+/* FIX: Clear/Search buttons in filter bar */
+.filter-bar .fb-actions{
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  align-items: flex-end;
+}
+.filter-bar .fb-actions .ghost,
+.filter-bar .fb-actions .primary{
+  flex: 0 0 auto;
+  width: auto;
+  display: inline-flex;
+  justify-content: center;
+  align-items: center;
+  height: 36px;
+  min-width: 110px;
+  padding: 0 14px;
+  line-height: 1;
+  box-sizing: border-box;
 }
